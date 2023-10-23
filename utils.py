@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-def stochrsi(df, period=14, smoothK=3, smoothD=3):
+def calculate_stochrsi(df, period=14, smoothK=3, smoothD=3):
     """
     Calculate Stochastic RSI (StochRSI) with optional smoothing.
     
@@ -35,7 +35,7 @@ def stochrsi(df, period=14, smoothK=3, smoothD=3):
 
     return df
 
-def stoch(df, period=14, smoothK=3, smoothD=3):
+def calculate_stoch(df, period=14, smoothK=3, smoothD=3):
     """
     Calculate Stochastic Oscillator (Stoch) with optional smoothing.
     
@@ -61,7 +61,7 @@ def stoch(df, period=14, smoothK=3, smoothD=3):
     
     return df
 
-def get_macd(df, slow = 26, fast = 12, smooth = 9):
+def calculate_macd(df, slow = 26, fast = 12, smooth = 9):
     """
     Calculate Moving Average Convergence Divergence (MACD) with signal and histogram.
 
@@ -80,7 +80,7 @@ def get_macd(df, slow = 26, fast = 12, smooth = 9):
 
     return df
 
-def get_ema(df):
+def calculate_ema(df):
     """
     Calculate Exponential Moving Averages (EMA) for 50 and 200 periods.
 
