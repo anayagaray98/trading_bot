@@ -24,7 +24,6 @@ regex==2023.10.3
 requests==2.31.0
 schedule==1.2.1
 six==1.16.0
-TA-Lib @ file:///D:/Personal/Latest%20Personal%20Files/Desktop%20-%20ASUS/Crypto_Bot/TA_Lib-0.4.24-cp310-cp310-win_amd64.whl#sha256=e730d89fcfc3f0832b3495e6fa0e47ab802eb6aa0c65c5fa2a9fd267e18bdef4
 tzdata==2023.3
 tzlocal==5.2
 ujson==5.8.0
