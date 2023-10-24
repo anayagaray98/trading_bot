@@ -2,7 +2,9 @@ import ccxt
 import config
 import pandas as pd
 from datetime import datetime
+import schedule
 import warnings
+import time
 from utils import calculate_ema, calculate_macd, calculate_stochrsi, calculate_adx, \
     calculate_obv, calculate_chaikin_oscillator, calculate_pivot_points, \
         calculate_price_channels, calculate_mass_index, calculate_elliott_wave, calculate_williams_percent_r, \
@@ -16,9 +18,12 @@ pd.set_option('display.max_rows', None)
 
 """ Configuration Variables """
 
-pairs = ['ETH/USDT'] #'SOL/USDT', 'ADA/USDT', 'DOGE/USDT', 'MATIC/USDT'
+pairs = ['DOGE/USDT'] #'ETH/USDT', 'SOL/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 'REEF/USDT'
 candle_type = '1m' # Since we're trading on the Futures market with leverage
 history_limit = 1500 # This is the largest size per API call.
+allowed_confidence_threshold = 0.7 # This is the minimum confidence level to make a buy/sell decision.
+trade_quantity_amount = 20.00 # Quantity in USDT
+leverage = 5
 exchange = ccxt.binance({
     "apiKey": config.API_KEY_PRODUCTION,
     "secret": config.API_SECRET_PRODUCTION,
@@ -27,24 +32,28 @@ exchange = ccxt.binance({
     },
 })
 
-# exchange.set_sandbox_mode(True)  # comment if you're not using the testnet
-markets = exchange.load_markets()
 exchange.verbose = False  # debug output
 
 #____________________________________________________________________________________________________________
 
-def get_account_positions():
+def get_account_positions(pair):
     balance = exchange.fetch_balance()
     positions = balance['info']['positions']
-    return positions
-
+    pair = pair.replace('/', '')
+    matching_positions = []
+    for position in positions:
+        if position['symbol'] == pair:
+            matching_positions.append(position)
+    return matching_positions
+            
 def set_leverage(leverage, pair):
+    pair = pair.replace('/', '')
     exchange.set_leverage(leverage, pair)
 
-def place_order(symbol, quantity, side, price, order_type):
+def place_order(symbol, quantity, side, price, order_type, params):
     try:
         print(f"Placing {side} order for {quantity} {symbol} at price {price}")
-        order = exchange.create_order(symbol, order_type, side, quantity, price)
+        order = exchange.create_order(symbol, order_type, side, quantity, price, params)
         print("Order details:")
         print(order)
     except Exception as e:
@@ -219,25 +228,80 @@ def run_bot():
                 df.at[i, 'sell_signal_confidence'] = 0.0  # No sell signal
 
 
-        df.to_csv(f"data/trading_info_for_model_{pair.replace('/', '_')}.csv")
+        # df.to_csv(f"data/trading_info_for_model_{pair.replace('/', '_')}.csv")
 
-        # # Get the trading signal from the model
-        # signal = get_model_signal(best_model, X)
+        print(df[['buy_signal', 'buy_signal_confidence', 'sell_signal', 'sell_signal_confidence']].tail(10))
 
-        # print(f"Offer: {signal}")
+        # Get the trading signal
+        last_row = df.iloc[-1].to_dict()
+        buy_signal = last_row['buy_signal']
+        sell_signal = last_row['sell_signal']
+        buy_confidence = last_row['buy_signal_confidence']
+        sell_confidence = last_row['sell_signal_confidence']
 
-        # TRADING PART RIGHT HERE
-        # Example: Place a limit order to buy 1 unit of the asset if the model predicts a buy signal
+        signal = None
+
+        if buy_signal == 1 and sell_signal == 0 and buy_confidence >= allowed_confidence_threshold:
+            signal = 'buy'
+        elif buy_signal == 1 and sell_signal == 1:
+            if buy_confidence >= allowed_confidence_threshold:
+                signal = 'buy'
+            elif sell_confidence >= allowed_confidence_threshold:
+                signal = 'sell'
+        elif sell_signal == 1 and sell_confidence >= allowed_confidence_threshold:
+            signal = 'sell'
+    
+        opened_positions = get_account_positions(pair)
+
+        in_position= False
+        position_side = None
+
+        if len(opened_positions) == 1:
+            position = opened_positions[0]
+            confidence = position['sell_signal_confidence']
+            position_amt = float(position['positionAmt'])
+
+            if confidence == 'LONG' and position_amt > 0:
+                in_position = True
+                position_side = 'LONG'
+            elif confidence == 'SHORT' and position_amt > 0:
+                in_position = True
+                position_side = 'SHORT'
+        else:
+            print("The length of opened positions exceeds 1.")
+
+
+        print(f"Trying to create an offer: {signal}")
 
         # Calculate the target price based on the model's predictions
-        # current_price = df['close'].iloc[-1]
-        # if signal == 1:
-        #     # If the model predicts a buy signal, you may consider a target price higher than the current price.
-        #     target_price = current_price * 1.05  # You can adjust the multiplier as needed.
-        #     place_order(pair, 1, 'buy', target_price)
-        # elif signal == -1:
-        #     # If the model predicts a sell signal, you may consider a target price lower than the current price.
-        #     target_price = current_price * 0.95  # You can adjust the multiplier as needed.
-        #     place_order(pair, 1, 'sell', target_price)
+        current_price = df['close'].iloc[-1]
 
-run_bot()
+        # TRADING PART RIGHT HERE
+        if signal:
+            if not in_position:
+                if signal == 'buy':
+                    params = {'positionSide': 'LONG', 'leverage':leverage}
+                    target_price = current_price * 0.99
+                    place_order(pair, trade_quantity_amount, 'buy', target_price, 'limit', params)
+                else:
+                    params = {'positionSide': 'SHORT', 'leverage':leverage}
+                    target_price = current_price * 1.01
+                    place_order(pair, trade_quantity_amount, 'buy', target_price, 'limit', params)
+            else:
+                if signal == 'buy':
+                    if position_side == 'SHORT':
+                        params = {'positionSide': 'SHORT', 'leverage':leverage}
+                        target_price = current_price * 0.99
+                        place_order(pair, trade_quantity_amount, 'sell', target_price, 'limit')
+                else:
+                    if position_side == 'LONG':
+                        params = {'positionSide': 'LONG', 'leverage':leverage}
+                        target_price = current_price * 1.01
+                        place_order(pair, trade_quantity_amount, 'sell', target_price, 'limit')
+
+
+schedule.every(15).seconds.do(run_bot)
+
+while True:
+    schedule.run_pending()
+    time.sleep(5)
