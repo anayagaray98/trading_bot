@@ -5,13 +5,8 @@ from datetime import datetime
 import warnings
 from utils import calculate_ema, calculate_macd, calculate_stochrsi, calculate_adx, \
     calculate_obv, calculate_chaikin_oscillator, calculate_pivot_points, \
-        calculate_price_channels, calculate_mass_index, calculate_elliott_wave
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import SVC
-from sklearn.linear_model import LogisticRegression
-import numpy as np
+        calculate_price_channels, calculate_mass_index, calculate_elliott_wave, calculate_williams_percent_r, \
+            calculate_bollinger_bands, calculate_ichimoku_cloud, calculate_atr, calculate_stoch
 
 warnings.filterwarnings('ignore')
 pd.set_option('display.max_rows', None)
@@ -34,18 +29,7 @@ exchange = ccxt.binance({
 
 # exchange.set_sandbox_mode(True)  # comment if you're not using the testnet
 markets = exchange.load_markets()
-exchange.verbose = True  # debug output
-
-
-# List of machine learning models to evaluate
-models = {
-    "Random Forest": RandomForestClassifier(random_state=42),
-    "SVM": SVC(random_state=42),
-    "Logistic Regression": LogisticRegression(random_state=42)
-}
-
-best_model = None
-best_accuracy = 0
+exchange.verbose = False  # debug output
 
 #____________________________________________________________________________________________________________
 
@@ -66,11 +50,6 @@ def place_order(symbol, quantity, side, price, order_type):
     except Exception as e:
         print(f"An error occurred while placing the order: {e}")
 
-def get_model_signal(model, X):
-    # Use the model to predict the trading signal
-    signal = model.predict(X)
-    return signal
-
 def run_bot():
     for pair in pairs:
         print(f"Fetching new bars for {datetime.now().isoformat()}")
@@ -78,27 +57,106 @@ def run_bot():
         df = pd.DataFrame(bars[:-1], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-        # Calculate technical indicators
-        df = calculate_stochrsi(df)
-        df = calculate_macd(df)
-        df = calculate_ema(df)
-        df = calculate_adx(df)  # Average Directional Index
-        df = calculate_chaikin_oscillator(df)  # Chaikin Oscillator
-        df = calculate_pivot_points(df)  # Pivot Points
-        df = calculate_price_channels(df)  # Donchian Channels
-        df = calculate_mass_index(df)  # Mass Index
-        df = calculate_elliott_wave(df) 
+        indicator_functions = [
+            calculate_stochrsi,
+            calculate_macd,
+            calculate_ema,
+            calculate_adx,
+            calculate_chaikin_oscillator,
+            calculate_pivot_points,
+            calculate_price_channels,
+            calculate_mass_index,
+            calculate_elliott_wave,
+            calculate_williams_percent_r,
+            calculate_obv,
+            calculate_bollinger_bands,
+            calculate_ichimoku_cloud,
+            calculate_atr,
+            calculate_stoch
+        ]
+
+        # Apply each indicator function to the DataFrame
+        for indicator_function in indicator_functions:
+            df = indicator_function(df)
+
+        
+        # Function to dynamically calculate threshold values for Bollinger Bands
+        def calculate_bollinger_bands_thresholds(df, periods=5):
+            # Calculate the rolling average of the last 'periods' periods for bollinger_upper and bollinger_lower
+            df['rolling_upper_avg'] = df['bollinger_upper'].rolling(periods).mean()
+            df['rolling_lower_avg'] = df['bollinger_lower'].rolling(periods).mean()
+
+            # Take the last calculated average values
+            upper_threshold = df['rolling_upper_avg'].iloc[-1]
+            lower_threshold = df['rolling_lower_avg'].iloc[-1]
+
+            return (lower_threshold, upper_threshold)
+        
+
+        # Function to dynamically calculate Ichimoku Cloud threshold values
+        def calculate_ichimoku_cloud_thresholds(df, moving_average_period=20):
+
+            # Calculate moving averages of Senkou Span A and Senkou Span B
+            df['senkou_span_a_ma'] = df['senkou_span_a'].rolling(window=moving_average_period).mean()
+            df['senkou_span_b_ma'] = df['senkou_span_b'].rolling(window=moving_average_period).mean()
+
+            # Set the threshold values for Ichimoku Cloud based on the moving averages
+            ichimoku_threshold = (df['senkou_span_b_ma'].iloc[-1], df['senkou_span_a_ma'].iloc[-1])
+
+            return ichimoku_threshold
+        
+        # Function to dynamically calculate MACD threshold values for upper and lower bounds
+        def calculate_macd_thresholds(df, moving_average_period=20, lower_threshold_percentage=0.8):
+            # Calculate the MACD threshold based on a 20-period moving average of the crossover points
+            df['macd_crossover'] = (df['macd'] > df['signal']) & (df['macd'].shift(1) <= df['signal'].shift(1))
+            df['macd_crossover_ma'] = df['macd_crossover'].rolling(window=moving_average_period).mean()
+            upper_threshold = df['macd_crossover_ma'].shift(1).iloc[-1]  # Use the last value for upper threshold
+
+            # Calculate the lower threshold as a percentage of the upper threshold
+            lower_threshold = lower_threshold_percentage * upper_threshold
+
+            return (lower_threshold, upper_threshold)
+        
+        # Function to dynamically calculate OBV threshold values
+        def calculate_obv_thresholds(df, moving_average_period=20):
+
+            # Calculate the OBV threshold based on a moving average
+            df['obv_threshold'] = df['obv'].rolling(window=moving_average_period).mean()
+
+            return (0, df['obv_threshold'].iloc[-1])
+
+
+        bollinger_thresholds = calculate_bollinger_bands_thresholds(df, periods=5)
+        ichimoku_thresholds = calculate_ichimoku_cloud_thresholds(df)
+        macd_thresholds = calculate_macd_thresholds(df)
+        obv_thresholds = calculate_obv_thresholds(df)
 
         # technical indicators to use
-        indicators = ['rsi', 'macd', 'chaikin_oscillator', 'ema_mass_index', 'elliott_wave']
+        indicators = [
+            'rsi',
+            'macd',
+            'chaikin_oscillator',
+            'bollinger_bands',
+            'atr',
+            'stoch',
+            'ichimoku_cloud',
+            'williams_percent_r',
+            'adx',
+            'obv',
+        ]
 
         # Define threshold values for each indicator
         thresholds = {
-            'rsi': (30, 70),  # Buy when RSI is above 70 and sell when RSI is below 30
-            'macd': (0, 0),   # Buy when MACD is above the signal line and sell when below
-            'chaikin_oscillator': (0, 0),  # Buy when Chaikin Oscillator is above 0 and sell when below
-            'ema_mass_index': (1.5, 0.8),  
-            'elliott_wave': (0, 0)  
+            'rsi': (30, 70), # RSI threshold values
+            'macd': macd_thresholds, # MACD threshold values
+            'chaikin_oscillator': (-0.2, 0.2), # Chaikin Oscillator threshold values
+            'bollinger_bands': bollinger_thresholds, # Bollinger Bands threshold values
+            'atr': (14, 35), # ATR threshold values
+            'stoch': (20, 80), # Stochastic Oscillator threshold values
+            'ichimoku_cloud': ichimoku_thresholds, # Ichimoku Cloud threshold values
+            'williams_percent_r': (20, 80), # Williams %R threshold values
+            'adx': (25, 50), # ADX threshold values
+            'obv': obv_thresholds, # On-Balance Volume threshold values
         }
 
         # Initialize buy and sell signals as 0 (Hold)
@@ -113,11 +171,36 @@ def run_bot():
             bearish_indicators = 0
 
             for indicator in indicators:
+
                 buy_threshold, sell_threshold = thresholds[indicator]
-                if df[indicator][i] > buy_threshold:
-                    bullish_indicators += 1
-                elif df[indicator][i] < sell_threshold:
-                    bearish_indicators += 1
+
+                if indicator == 'bollinger_bands':
+                    # Check if the upper Bollinger Band crosses the upper threshold
+                    if df['bollinger_upper'][i] > buy_threshold:
+                        bullish_indicators += 1
+                    # Check if the lower Bollinger Band crosses the lower threshold
+                    elif df['bollinger_lower'][i] < sell_threshold:
+                        bearish_indicators += 1
+
+                elif indicator == 'ichimoku_cloud':
+                    # Check if Senkou Span A crosses above Senkou Span B (upper_threshold) for bullish
+                    if df['senkou_span_a'][i] > buy_threshold:
+                        bullish_indicators += 1
+                    # Check if Senkou Span A crosses below Senkou Span B (lower_threshold) for bearish
+                    elif df['senkou_span_b'][i] < sell_threshold:
+                        bearish_indicators += 1
+
+                elif indicator == 'stoch':
+                    if df['stoch_k'][i] > df['stoch_d'][i] > buy_threshold:
+                        bullish_indicators += 1
+                    elif df['stoch_k'][i] < df['stoch_d'][i] < sell_threshold:
+                        bearish_indicators += 1
+
+                else:
+                    if df[indicator][i] > buy_threshold:
+                        bullish_indicators += 1
+                    elif df[indicator][i] < sell_threshold:
+                        bearish_indicators += 1
 
             # Calculate buy signal and confidence level
             if bullish_indicators > bearish_indicators:
@@ -129,53 +212,14 @@ def run_bot():
 
             # Calculate sell signal and confidence level
             if bearish_indicators > bullish_indicators:
-                df.at[i, 'sell_signal'] = -1
+                df.at[i, 'sell_signal'] = 1
                 df.at[i, 'sell_signal_confidence'] = bearish_indicators / len(indicators)
             else:
                 df.at[i, 'sell_signal'] = 0
                 df.at[i, 'sell_signal_confidence'] = 0.0  # No sell signal
 
-        # Define the target variable: 1 for Buy, -1 for Sell, 0 for Hold
-        # df['action'] = 0
-        # df.loc[df['buy_signal'], 'action'] = 1
-        # df.loc[df['sell_signal'], 'action'] = -1
-        # df['action'] = df['action'].replace(0, np.nan)  # Replace 0 (Hold) with NaN
-        # df['action'].fillna(method='ffill', inplace=True)  # Forward-fill NaN values to prioritize the most recent signal
 
         df.to_csv(f"data/trading_info_for_model_{pair.replace('/', '_')}.csv")
-
-        # # Prepare the feature matrix and target vector
-        # features = ['rsi', 'macd', 'signal', 'srsi_k', 'srsi_d']
-        # df[features] = df[features].fillna(0)  # Handle missing values
-        # X = df[features]
-        # y = df['action']
-
-        # # Split the data into training and testing sets
-        # X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-        # best_model = None
-        # best_accuracy = 0
-        # for model_name, model in models.items():
-        #     # Create and train an ML model
-        #     model.fit(X_train, y_train)
-
-        #     # Make predictions on the testing set
-        #     y_pred = model.predict(X_test)
-
-        #     # Calculate the accuracy of the model
-        #     accuracy = accuracy_score(y_test, y_pred)
-        #     print(f"{model_name} Accuracy: {accuracy * 100:.2f}%")
-
-        #     # Check if this model is the best so far
-        #     if accuracy > best_accuracy:
-        #         best_model = model
-        #         best_accuracy = accuracy
-        
-        # print("*"*50)
-        # print("Best Model:", best_model)
-
-        # Train the best model on the entire dataset
-        # best_model.fit(X, y)
 
         # # Get the trading signal from the model
         # signal = get_model_signal(best_model, X)

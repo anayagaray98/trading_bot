@@ -53,8 +53,9 @@ def calculate_stoch(df, period=14, smoothK=3, smoothD=3):
     l14 = df['close'].rolling(period).min()
     h14 = df['close'].rolling(period).max()
     
-    # Calculate %K
+    # Calculate %K with smoothing
     df['stoch_k'] = ((df['close'].shift(1) - l14) * 100) / (h14 - l14)
+    df['stoch_k'] = df['stoch_k'].rolling(smoothK).mean()  # Smooth %K
     
     # Calculate %D by smoothing %K
     df['stoch_d'] = df['stoch_k'].rolling(smoothD).mean()
@@ -243,7 +244,16 @@ def calculate_obv(df):
     Returns:
     pandas.DataFrame: Original DataFrame with 'obv' column added.
     """
-    df['obv'] = np.where(df['close'] > df['close'].shift(1), df['volume'] + df['obv'].shift(1), np.where(df['close'] < df['close'].shift(1), -df['volume'] + df['obv'].shift(1), df['obv'].shift(1)))
+    obv = [0]  # Initialize the first OBV value as 0
+    for i in range(1, len(df)):
+        if df['close'][i] > df['close'][i - 1]:
+            obv.append(obv[-1] + df['volume'][i])
+        elif df['close'][i] < df['close'][i - 1]:
+            obv.append(obv[-1] - df['volume'][i])
+        else:
+            obv.append(obv[-1])  # If the closing price remains the same, OBV doesn't change
+
+    df['obv'] = obv  # Assign the calculated OBV to the DataFrame
     return df
 
 def calculate_chaikin_oscillator(df, ema_fast_period=3, ema_slow_period=10):
