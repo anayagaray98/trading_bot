@@ -18,10 +18,10 @@ pd.set_option('display.max_rows', None)
 
 """ Configuration Variables """
 
-pairs = ['DOGE/USDT'] #'ETH/USDT', 'SOL/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 'REEF/USDT'
+pairs = ['GALA/USDT'] #'ETH/USDT', 'SOL/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 'REEF/USDT', 'DOGE/USDT', 'XRP/USDT'
 candle_type = '1m' # Since we're trading on the Futures market with leverage
 history_limit = 1500 # This is the largest size per API call.
-allowed_confidence_threshold = 0.7 # This is the minimum confidence level to make a buy/sell decision.
+allowed_confidence_threshold = 0.6 # This is the minimum confidence level to make a buy/sell decision.
 trade_quantity_amount = 20.00 # Quantity in USDT
 leverage = 5
 exchange = ccxt.binance({
@@ -227,58 +227,69 @@ def run_bot():
                 df.at[i, 'sell_signal'] = 0
                 df.at[i, 'sell_signal_confidence'] = 0.0  # No sell signal
 
-
-        # df.to_csv(f"data/trading_info_for_model_{pair.replace('/', '_')}.csv")
-
         print(df[['buy_signal', 'buy_signal_confidence', 'sell_signal', 'sell_signal_confidence']].tail(10))
 
-        # Get the trading signal
-        last_row = df.iloc[-1].to_dict()
+        # Get the last 5 rows of the DataFrame
+        last_5_rows = df.tail(5)
+
+        # Extract the last row for 'buy_signal' and 'sell_signal'
+        last_row = last_5_rows.iloc[-1]
+
         buy_signal = last_row['buy_signal']
         sell_signal = last_row['sell_signal']
-        buy_confidence = last_row['buy_signal_confidence']
-        sell_confidence = last_row['sell_signal_confidence']
+
+        # Calculate the mean confidence for the last 5 rows
+        buy_confidence = last_5_rows['buy_signal_confidence'].mean()
+        sell_confidence = last_5_rows['sell_signal_confidence'].mean()
 
         signal = None
 
-        if buy_signal == 1 and sell_signal == 0 and buy_confidence >= allowed_confidence_threshold:
+        if buy_signal == 1 and sell_signal == 0 and buy_confidence > allowed_confidence_threshold:
             signal = 'buy'
         elif buy_signal == 1 and sell_signal == 1:
-            if buy_confidence >= allowed_confidence_threshold:
+            if buy_confidence > allowed_confidence_threshold:
                 signal = 'buy'
-            elif sell_confidence >= allowed_confidence_threshold:
+            elif sell_confidence > allowed_confidence_threshold:
                 signal = 'sell'
-        elif sell_signal == 1 and sell_confidence >= allowed_confidence_threshold:
+        elif sell_signal == 1 and sell_confidence > allowed_confidence_threshold:
             signal = 'sell'
-    
+
+        set_leverage(leverage, pair)
         opened_positions = get_account_positions(pair)
+        print(opened_positions)
 
-        in_position= False
-        position_side = None
+        in_position = False
+        set_position_side = None
+        set_position_amount = 0.0
+        has_notional = False
 
-        if len(opened_positions) == 1:
-            position = opened_positions[0]
-            confidence = position['sell_signal_confidence']
+        for position in opened_positions:
             position_amt = float(position['positionAmt'])
+            position_side = position['positionSide']
+            bid_notional = float(position['bidNotional'])
+            ask_notional = float(position['askNotional'])
 
-            if confidence == 'LONG' and position_amt > 0:
-                in_position = True
-                position_side = 'LONG'
-            elif confidence == 'SHORT' and position_amt > 0:
-                in_position = True
-                position_side = 'SHORT'
-        else:
-            print("The length of opened positions exceeds 1.")
+            if bid_notional == 0.0 or ask_notional == 0.0:
+                has_notional = True
 
+            if position_side == 'LONG' and position_amt > 0 and (bid_notional == 0.0 or ask_notional == 0.0):
+                in_position = True
+                set_position_side = 'LONG'
+                set_position_amount += position_amt
+            elif position_side == 'SHORT' and position_amt < 0 and (bid_notional == 0.0 or ask_notional == 0.0):
+                in_position = True
+                set_position_side = 'SHORT'
+                set_position_amount += position_amt
 
         print(f"Trying to create an offer: {signal}")
+        print(f"Open Order: {set_position_side}")
 
         # Calculate the target price based on the model's predictions
         current_price = df['close'].iloc[-1]
 
         # TRADING PART RIGHT HERE
         if signal:
-            if not in_position:
+            if not in_position and not has_notional:
                 if signal == 'buy':
                     params = {'positionSide': 'LONG', 'leverage':leverage}
                     target_price = current_price * 0.99
@@ -286,18 +297,18 @@ def run_bot():
                 else:
                     params = {'positionSide': 'SHORT', 'leverage':leverage}
                     target_price = current_price * 1.01
-                    place_order(pair, trade_quantity_amount, 'buy', target_price, 'limit', params)
+                    place_order(pair, trade_quantity_amount/target_price, 'sell', target_price, 'limit', params) # Changed as well following below logic
             else:
                 if signal == 'buy':
-                    if position_side == 'SHORT':
+                    if set_position_side == 'SHORT':
                         params = {'positionSide': 'SHORT', 'leverage':leverage}
                         target_price = current_price * 0.99
-                        place_order(pair, trade_quantity_amount, 'sell', target_price, 'limit')
+                        place_order(pair, set_position_amount*-1, 'buy', target_price, 'limit', params) # Changed from sell to buy to close position, ? 
                 else:
-                    if position_side == 'LONG':
+                    if set_position_side == 'LONG':
                         params = {'positionSide': 'LONG', 'leverage':leverage}
                         target_price = current_price * 1.01
-                        place_order(pair, trade_quantity_amount, 'sell', target_price, 'limit')
+                        place_order(pair, set_position_amount*-1, 'sell', target_price, 'limit', params)
 
 
 schedule.every(15).seconds.do(run_bot)
