@@ -23,10 +23,10 @@ candle_types = ['1m', '5m'] # Since we're trading on the Futures market with lev
 history_limit = 1500 # This is the largest size per API call.
 allowed_confidence_threshold = 0.65 # This is the minimum confidence level to make a buy/sell decision.
 trade_quantity_amount = 20.00 # Quantity in USDT
-leverage = 5
+leverage = 7
 type_of_order = 'market' # limit, market
-expected_return_level = 10 # %
-stop_loss_level = 5 # %
+expected_return_level = 6 # %
+stop_loss_level = 3 # %
 
 exchange = ccxt.binance({
     "apiKey": config.API_KEY_PRODUCTION,
@@ -74,11 +74,22 @@ def run_bot():
         sell_signals = []
         buy_confidences = []
         sell_confidences = []
+        current_price = 0.0
 
         for candle_type in candle_types:
-            bars = exchange.fetch_ohlcv(pair, timeframe=candle_type, limit=history_limit)
+
+            try:
+                bars = exchange.fetch_ohlcv(pair, timeframe=candle_type, limit=history_limit)
+            except Exception as e:
+                print(f"An error occured: {e}")
+                time.sleep(5)
+                pass
+
             df = pd.DataFrame(bars[:-1], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+            if candle_type == '1m':
+                current_price += float(df['close'].iloc[-1])
 
             indicator_functions = [
                 calculate_stochrsi,
@@ -312,10 +323,7 @@ def run_bot():
             if set_position_side:
                 print(f"Open Order: {set_position_side}")
             else:
-                print("There is no opened position.")
-
-            # Calculate the target price based on the model's predictions
-            current_price = df['close'].iloc[-1]
+                print("There is no opened position.")            
 
             # TRADING PART RIGHT HERE
             if not in_position and not has_notional:
@@ -392,7 +400,7 @@ def run_bot():
         else:
             print("Nothing to do. There is no significant signal here.")
 
-schedule.every(15).seconds.do(run_bot)
+schedule.every(30).seconds.do(run_bot)
 
 while True:
     schedule.run_pending()
