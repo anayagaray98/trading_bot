@@ -17,7 +17,7 @@ pd.set_option('display.max_rows', None)
 
 """ Configuration Variables """
 
-pairs = ['C98/USDT', 'MATIC/USDT', 'WAXP/USDT'] #'ETH/USDT', 'ALPHA/USDT', 'SOL/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 'REEF/USDT', 'DOGE/USDT', 'XRP/USDT', 'GALA/USDT', 'WAXP/USDT', 'C98/USDT', '1000SHIB/USDT'
+pairs = ['C98/USDT', 'MATIC/USDT', 'WAXP/USDT', 'DOGE/USDT'] #'ETH/USDT', 'ALPHA/USDT', 'SOL/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 'REEF/USDT', 'DOGE/USDT', 'XRP/USDT', 'GALA/USDT', 'WAXP/USDT', 'C98/USDT', '1000SHIB/USDT'
 candle_types = ['1m', '5m'] # Since we're trading on the Futures market with leverage
 history_limit = 600 # 1500 is the largest size per API call.
 allowed_confidence_threshold = 0.65 # This is the minimum confidence level to make a buy/sell decision.
