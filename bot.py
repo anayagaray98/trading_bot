@@ -1,32 +1,41 @@
 import ccxt
 import config
 import pandas as pd
+import numpy as np
 import schedule
 import warnings
 import time
+import json
+from dateutil import relativedelta
+from datetime import datetime
 from utils import calculate_ema, calculate_macd, calculate_stochrsi, calculate_adx, \
     calculate_obv, calculate_chaikin_oscillator, calculate_pivot_points, \
         calculate_price_channels, calculate_mass_index, calculate_elliott_wave, calculate_williams_percent_r, \
             calculate_bollinger_bands, calculate_ichimoku_cloud, calculate_atr, calculate_stoch
 
 warnings.filterwarnings('ignore')
-pd.set_option('display.max_rows', None)
 
 #____________________________________________________________________________________________________
 
 
 """ Configuration Variables """
 
-pairs = ['C98/USDT', 'MATIC/USDT', 'WAXP/USDT', 'DOGE/USDT'] #'ETH/USDT', 'ALPHA/USDT', 'SOL/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 'REEF/USDT', 'DOGE/USDT', 'XRP/USDT', 'GALA/USDT', 'WAXP/USDT', 'C98/USDT', '1000SHIB/USDT'
-candle_types = ['1m', '5m'] # Since we're trading on the Futures market with leverage
+pairs = ['ETH/USDT', 'ALPHA/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 
+         'REEF/USDT', 'DOGE/USDT', 'XRP/USDT', 'GALA/USDT', 'WAXP/USDT', 'C98/USDT', 
+         '1000SHIB/USDT', 'AVAX/USDT', 'DOT/USDT', 'LINK/USDT', 'UNI/USDT','ATOM/USDT'] 
+
+candle_types = ['1m', '5m'] # Since we're trading on the Futures market with leverage.
 history_limit = 600 # 1500 is the largest size per API call.
-allowed_confidence_threshold = 0.65 # This is the minimum confidence level to make a buy/sell decision.
-trade_quantity_amount = 25.00 # Quantity in USDT
-leverage = 7
-type_of_order = 'market' # limit, market
-expected_return_level = 10 # %
-stop_loss_level = 7 # %
-max_allowed_positions = 3
+allowed_confidence_threshold = 0.63 # This is the minimum confidence level to make a buy/sell decision.
+trade_quantity_amount = 25.00 # Quantity in USDT.
+leverage = 7 # Leverage multiplier.
+type_of_order = 'market' # limit, market.
+expected_return_level = 4 # %
+stop_loss_level = 3.5 # %
+max_allowed_positions = 4 # Number of positions allowed in the trading strategy.
+max_correlation_value = 9 # %
+recently_traded_cryptos_path = "recently_traded_crypto.json"
+hours_number_until_trade_again = 1 # Number of hours to wait until asset can be tradable again.
 
 exchange = ccxt.binance({
     "apiKey": config.API_KEY_PRODUCTION,
@@ -87,12 +96,15 @@ def calculate_correlation(pair1_data, pair2_data):
     Returns:
     - correlation: The Pearson correlation coefficient between the two pairs.
     """
+    # Convert the dictionary to a pandas DataFrame
+    df_1 = pd.DataFrame(list(pair1_data.items()), columns=["index", "close"])
+    df_2 = pd.DataFrame(list(pair2_data.items()), columns=["index", "close"])
     # Ensure that both dataframes have the same index (date) and non-null values
-    pair1_data.dropna(inplace=True)
-    pair2_data.dropna(inplace=True)
+    df_1.dropna(inplace=True)
+    df_2.dropna(inplace=True)
     
     # Merge the two dataframes based on the date index
-    merged_data = pd.concat([pair1_data, pair2_data], axis=1, join='inner')
+    merged_data = pd.concat([df_1, df_2], axis=1, join='inner')
     
     # Calculate the Pearson correlation coefficient
     correlation = merged_data.corr().iloc[0, 1]
@@ -102,26 +114,17 @@ def calculate_correlation(pair1_data, pair2_data):
 #____________________________________________________________________________________________________________
 
 def run_bot():
+
+    trades_structure = []
     for pair in pairs:
-        print()
         print(f"Fetching new bars for {pair}")
-
-        buy_signals = []
-        sell_signals = []
-        buy_confidences = []
-        sell_confidences = []
-        current_price = 0.0
-
+        data_by_candle_type = {}
         for candle_type in candle_types:
-
             try:
                 bars = exchange.fetch_ohlcv(pair, timeframe=candle_type, limit=history_limit)
 
                 df = pd.DataFrame(bars[:-1], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-
-                if candle_type == '1m':
-                    current_price += float(df['close'].iloc[-1])
 
                 indicator_functions = [
                     calculate_stochrsi,
@@ -210,17 +213,17 @@ def run_bot():
 
                 # Define threshold values for each indicator
                 thresholds = {
-                'rsi': (30, 70), # RSI threshold values
-                'macd': macd_thresholds, # MACD threshold values
-                'chaikin_oscillator': (-0.2, 0.2), # Chaikin Oscillator threshold values
-                'bollinger_bands': bollinger_thresholds, # Bollinger Bands threshold values
-                'atr': (14, 35), # ATR threshold values
-                'stoch': (20, 80), # Stochastic Oscillator threshold values
-                'ichimoku_cloud': ichimoku_thresholds, # Ichimoku Cloud threshold values
-                'williams_percent_r': (20, 80), # Williams %R threshold values
-                'adx': (25, 50), # ADX threshold values
-                'obv': obv_thresholds, # On-Balance Volume threshold values
-            }
+                    'rsi': (30, 70), # RSI threshold values
+                    'macd': macd_thresholds, # MACD threshold values
+                    'chaikin_oscillator': (-0.2, 0.2), # Chaikin Oscillator threshold values
+                    'bollinger_bands': bollinger_thresholds, # Bollinger Bands threshold values
+                    'atr': (14, 35), # ATR threshold values
+                    'stoch': (20, 80), # Stochastic Oscillator threshold values
+                    'ichimoku_cloud': ichimoku_thresholds, # Ichimoku Cloud threshold values
+                    'williams_percent_r': (20, 80), # Williams %R threshold values
+                    'adx': (25, 50), # ADX threshold values
+                    'obv': obv_thresholds, # On-Balance Volume threshold values
+                }
 
                 # Initialize buy and sell signals as 0 (Hold)
                 df['buy_signal'] = 0
@@ -281,48 +284,102 @@ def run_bot():
                         df.at[i, 'sell_signal'] = 0
                         df.at[i, 'sell_signal_confidence'] = 0.0  # No sell signal
 
-                print("*"*80)
-                print(f"SUMMARY: {candle_type} candles.")
-                print("*"*80)
-                print(df[['buy_signal', 'buy_signal_confidence', 'sell_signal', 'sell_signal_confidence']].tail(5))
-
-                # Get the last 5 rows of the DataFrame
-                last_5_rows = df.tail(5)
-
-                # Extract the last row for 'buy_signal' and 'sell_signal'
-                last_row = last_5_rows.iloc[-1]
-
-                buy_signals.append(last_row['buy_signal'])
-                sell_signals.append(last_row['sell_signal'])
-
-                # Calculate the mean confidence for the last 5 rows
-                buy_confidences.append(last_5_rows['buy_signal_confidence'].mean())
-                sell_confidences.append(last_5_rows['sell_signal_confidence'].mean())
+                data_by_candle_type[candle_type] = df.to_dict()
 
             except Exception as e:
                 print(f"An error occured: {e}")
                 time.sleep(5)
                 return e
 
+        trades_structure.append({
+            "pair":pair,
+            "candle_types":data_by_candle_type
+        })
+
+
+    """ Calculate Correlations """
+
+    print("Hold on! Calculating correlations...")
+    correlations = []
+    for candle_type in candle_types: 
+        for j in range(len(trades_structure)):
+            pair1 = trades_structure[j]['pair']
+            pair1_data = trades_structure[j]['candle_types'][candle_type]['close']
+            for k in range(len(trades_structure)):
+                pair2 = trades_structure[k]['pair']
+                pair2_data = trades_structure[k]['candle_types'][candle_type]['close']
+                correlation_value = calculate_correlation(pair1_data, pair2_data)
+                correlations.append({"pair_1": pair1, "pair_2": pair2, "corr": correlation_value, "candle_type": candle_type})
+    
+    # Create a dictionary to accumulate correlation values for each unique pair
+    pair_correlations = {}
+
+    # Iterate over the correlations
+    for correlation in correlations:
+        pair_1 = correlation["pair_1"]
+        pair_2 = correlation["pair_2"]
+        corr = correlation["corr"]
+
+        # Check if this pair combination is already in the dictionary
+        if (pair_1, pair_2) in pair_correlations:
+            pair_correlations[(pair_1, pair_2)].append(corr)
+        elif (pair_2, pair_1) in pair_correlations:
+            pair_correlations[(pair_2, pair_1)].append(corr)
+        else:
+            pair_correlations[(pair_1, pair_2)] = [corr]
+
+    # Calculate the mean correlation for each unique pair
+    pair_means = {}
+    for pair, corr_values in pair_correlations.items():
+        mean_corr = np.mean(corr_values)
+        pair_means[pair] = mean_corr
+
+    for i in range(len(trades_structure)):
+
+        print()
+        print("*"*20, ' ' + trades_structure[i]['pair'] + ' ', "*"*20)
+        print()
+        
         signals = []
-        for i in range(len(candle_types)):
-            if buy_signals[i] == 1:
-                if buy_confidences[i] > allowed_confidence_threshold:
+        current_price = 0.0
+        for candle_type in candle_types: 
+
+            df = pd.DataFrame(trades_structure[i]['candle_types'][candle_type])
+
+            # Get las price of this pair
+            if candle_type == '1m':
+                current_price += float(df['close'].iloc[-1])
+            
+            # Get the last 5 rows of the DataFrame
+            last_5_rows = df[['buy_signal', 'buy_signal_confidence', 'sell_signal', 'sell_signal_confidence']].tail(5)
+
+            # Extract the last row for 'buy_signal' and 'sell_signal'
+            last_row = last_5_rows.iloc[-1]
+
+            buy_signal = last_row['buy_signal']
+            sell_signal = last_row['sell_signal']
+
+            # Calculate the mean confidence for the last 5 rows
+            buy_confidence = last_5_rows['buy_signal_confidence'].mean()
+            sell_confidence = last_5_rows['sell_signal_confidence'].mean()
+
+            if buy_signal == 1:
+                if buy_confidence > allowed_confidence_threshold:
                     signals.append('buy')
                 else:
                     signals.append(None)
 
-            elif buy_signals[i] == 0:
-                if sell_signals[i] == 0:
+            elif buy_signal == 0:
+                if sell_signal == 0:
                     signals.append(None)
-                elif sell_signals[i] == 1:
-                    if sell_confidences[i] > allowed_confidence_threshold:
+                elif sell_signal == 1:
+                    if sell_confidence > allowed_confidence_threshold:
                         signals.append('sell')
                     else:
                         signals.append(None)
-
-        set_leverage(leverage, pair)
-        pair_positions = get_account_positions(pair)
+        
+        set_leverage(leverage, trades_structure[i]['pair'])
+        pair_positions = get_account_positions(trades_structure[i]['pair'])
 
         in_position = False
         set_position_side = None
@@ -346,6 +403,7 @@ def run_bot():
                 set_position_amount += position_amt
                 set_entry_price += entry_price
                 break
+
             elif position_side == 'SHORT' and position_amt < 0 and (bid_notional == 0.0 or ask_notional == 0.0):
                 in_position = True
                 set_position_side = 'SHORT'
@@ -359,7 +417,7 @@ def run_bot():
             final_signal = 'sell'
         else:
             final_signal = None
-        
+    
         # Being aware of current price change to trigger stop loss and take profit
         if in_position:
             price_change = ((current_price/set_entry_price)-1)*100
@@ -381,8 +439,30 @@ def run_bot():
                     print("Triggering STOP LOSS")
 
                 if (price_change <= (expected_return_level * -1)) or (price_change > stop_loss_level):
-                    params = {'positionSide': 'SHORT', 'leverage':leverage, 'reduceOnly':False}
-                    place_order(symbol=pair, quantity=set_position_amount, side='buy', price=current_price, order_type=type_of_order, params=params)
+
+                    params = {'positionSide': 'SHORT', 'leverage':leverage}
+
+                    with open(recently_traded_cryptos_path, 'r') as json_file:
+                        data = json.load(json_file)
+                    
+                    try:
+                        place_order(symbol=trades_structure[i]['pair'], quantity=set_position_amount, side='buy', price=current_price, order_type=type_of_order, params=params)
+                        
+                        pair_found = False
+                        for pair in data['pairs']:
+                            if trades_structure[i]['pair'] == pair['symbol']:
+                                pair['closed_time'] = datetime.now()
+                                pair_found = True
+                                break
+
+                        if not pair_found:
+                            data['pairs'].append({"symbol":trades_structure[i]['pair'], "closed_time":datetime.now()})
+                        
+                        with open(recently_traded_cryptos_path, 'w') as json_file:
+                            json.dump(data, json_file, indent=4)
+
+                    except Exception as e:
+                        print(f"An error occured: {e}")
             
             if set_position_side == 'LONG':
                 if (price_change >= expected_return_level):
@@ -391,47 +471,103 @@ def run_bot():
                     print("Triggering STOP LOSS")
 
                 if (price_change >= expected_return_level) or (price_change < (stop_loss_level * -1)):
-                    params = {'positionSide': 'LONG', 'leverage':leverage, 'reduceOnly':False}
-                    place_order(symbol=pair, quantity=set_position_amount, side='sell', price=current_price, order_type=type_of_order, params=params)
+
+                    params = {'positionSide': 'LONG', 'leverage':leverage}
+
+                    with open(recently_traded_cryptos_path, 'r') as json_file:
+                        data = json.load(json_file)
+                    
+                    try:
+                        place_order(symbol=trades_structure[i]['pair'], quantity=set_position_amount, side='sell', price=current_price, order_type=type_of_order, params=params)
+                        
+                        pair_found = False
+                        for pair in data['pairs']:
+                            if trades_structure[i]['pair'] == pair['symbol']:
+                                pair['closed_time'] = datetime.now()
+                                pair_found = True
+                                break
+
+                        if not pair_found:
+                            data['pairs'].append({"symbol":trades_structure[i]['pair'], "closed_time":datetime.now()})
+
+                        with open(recently_traded_cryptos_path, 'w') as json_file:
+                            json.dump(data, json_file, indent=4)
+
+                    except Exception as e:
+                        print(f"An error occured: {e}")
 
         if final_signal:    
+            print("|"*100)
+            print(final_signal)
             if in_position and not has_notional:  
                 # If stop loss and take profit are not triggered, check for contrary signals and close if it's the case
                 if final_signal == 'buy' and set_position_side == 'SHORT':
                     print(f"Trying to cancel an offer: {set_position_side}")
-                    params = {'positionSide': 'SHORT', 'leverage':leverage, 'reduceOnly':False}
+                    params = {'positionSide': 'SHORT', 'leverage':leverage}
                     target_price = current_price * 0.99
-                    place_order(symbol=pair, quantity=set_position_amount, side='sell', price=target_price, order_type=type_of_order, params=params)
+                    place_order(symbol=trades_structure[i]['pair'], quantity=set_position_amount, side='sell', price=target_price, order_type=type_of_order, params=params)
                 
                 if final_signal == 'sell' and set_position_side == 'LONG':
                     print(f"Trying to cancel an offer: {set_position_side}")
-                    params = {'positionSide': 'LONG', 'leverage':leverage, 'reduceOnly':False}
+                    params = {'positionSide': 'LONG', 'leverage':leverage}
                     target_price = current_price * 1.01
-                    place_order(symbol=pair, quantity=set_position_amount, side='sell', price=target_price, order_type=type_of_order, params=params)
+                    place_order(symbol=trades_structure[i]['pair'], quantity=set_position_amount, side='buy', price=target_price, order_type=type_of_order, params=params)
 
+            break_trading_process = False
             # TRADING PART RIGHT HERE
             if not in_position and not has_notional:
-                if not len(all_open_positions) >= max_allowed_positions:
-                    print(f"Trying to create an offer: {final_signal}")
-                    if final_signal == 'buy':
-                        params = {'positionSide': 'LONG', 'leverage':leverage}
-                        new_quantity = (trade_quantity_amount * leverage) / current_price
-                        target_price = current_price * 0.99
-                        place_order(symbol=pair, quantity=new_quantity, side='buy', price=target_price, order_type=type_of_order, params=params)
+
+                with open(recently_traded_cryptos_path, 'r') as json_file:
+                    data = json.load(json_file)
+
+                if len(data['pairs']) > 0:
+                    for traded_pair in data['pairs']:
+                        if (traded_pair['symbol'] == trades_structure[i]['pair']):
+                            if traded_pair['closed_time']:
+                                if (traded_pair['closed_time'] + relativedelta(h=hours_number_until_trade_again) <= datetime.now()):
+                                    print(f"This pair cannot be traded, waint until {traded_pair['closed_time']}, so that you can trade it")
+                                    break_trading_process = True
+
+                if not break_trading_process:
+                    if not len(all_open_positions) >= max_allowed_positions:
+                        
+                        corr_value = None  # Initialize corr_value to None
+                        if len(all_open_positions) > 0:
+                            for open_position in all_open_positions:
+                                key1 = f"({trades_structure[i]['pair']}, {open_position})"
+                                key2 = f"({open_position}, {trades_structure[i]['pair']})"
+
+                                if key1 in pair_means.keys():
+                                    corr_value = pair_means[key1]
+                                    break
+
+                                if key2 in pair_means.keys():
+                                    corr_value = pair_means[key2]
+                                    break
+
+                        if ((corr_value) and (not abs(corr_value) > max_correlation_value/100) and (len(all_open_positions) > 0)) or (len(all_open_positions) == 0):
+
+                            print(f"Trying to create an offer: {final_signal}")
+                            if final_signal == 'buy':
+                                params = {'positionSide': 'LONG', 'leverage':leverage}
+                                new_quantity = (trade_quantity_amount * leverage) / current_price
+                                target_price = current_price * 0.99
+                                place_order(symbol=trades_structure[i]['pair'], quantity=new_quantity, side='buy', price=target_price, order_type=type_of_order, params=params)
+                            else:
+                                params = {'positionSide': 'SHORT', 'leverage':leverage}
+                                new_quantity = (trade_quantity_amount * leverage) / current_price
+                                target_price = current_price * 1.01
+                                place_order(symbol=trades_structure[i]['pair'], quantity=new_quantity, side='sell', price=target_price, order_type=type_of_order, params=params)
+                        else:
+                            print(f"This pair: {trades_structure[i]['pair']} is highly correlated with an open position. We won't move forward.")
                     else:
-                        params = {'positionSide': 'SHORT', 'leverage':leverage}
-                        new_quantity = (trade_quantity_amount * leverage) / current_price
-                        target_price = current_price * 1.01
-                        place_order(symbol=pair, quantity=new_quantity, side='sell', price=target_price, order_type=type_of_order, params=params)
-            
-                else:
-                    print("You cannot add another pair to your trades. Wait until they close.")
+                        print("You cannot add another pair to your trades. Wait until they close.")
         else:
             print("Nothing to do. There is no significant signal here.")
 
-    print()
-    print("_"*120)
-    print()
+        print()
+        print("_"*120)
+        print()
 
 schedule.every(30).seconds.do(run_bot)
 
