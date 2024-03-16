@@ -9,15 +9,9 @@ import json
 from dateutil.relativedelta import relativedelta
 from datetime import datetime
 import concurrent.futures
-from utils import calculate_ema, calculate_macd, calculate_stochrsi, calculate_adx, \
-    calculate_obv, calculate_chaikin_oscillator, calculate_pivot_points, \
-        calculate_price_channels, calculate_mass_index, calculate_elliott_wave, calculate_williams_percent_r, \
-            calculate_bollinger_bands, calculate_ichimoku_cloud, calculate_atr, calculate_stoch, \
-            calculate_correlation, process_pair, is_position_risky
+from utils import *
 
 warnings.filterwarnings('ignore')
-
-#____________________________________________________________________________________________________
 
 
 """ Configuration Variables """
@@ -54,8 +48,6 @@ exchange = ccxt.binance({
 })
 
 exchange.verbose = False  # debug output
-
-#____________________________________________________________________________________________________________
 
 def place_order(symbol, quantity, side, price, order_type, params):
     try:
@@ -136,7 +128,6 @@ indicators = [
     'adx',
     'obv',
 ]
-#____________________________________________________________________________________________________________
 
 def run_bot():
 
