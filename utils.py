@@ -360,3 +360,186 @@ def calculate_elliott_wave(df):
             df.at[i, 'elliott_wave'] = -1  # Indicates a downward wave
 
     return df
+            
+def calculate_correlation(pair1_data, pair2_data):
+    """
+    Calculate the Pearson correlation coefficient between two cryptocurrency pairs.
+
+    Parameters:
+    - pair1_data: A pandas Series or DataFrame with historical price data for the first cryptocurrency pair.
+    - pair2_data: A pandas Series or DataFrame with historical price data for the second cryptocurrency pair.
+
+    Returns:
+    - correlation: The Pearson correlation coefficient between the two pairs.
+    """
+    # Convert the dictionary to a pandas DataFrame
+    df_1 = pd.DataFrame(list(pair1_data.items()), columns=["index", "close"])
+    df_2 = pd.DataFrame(list(pair2_data.items()), columns=["index", "close"])
+    # Ensure that both dataframes have the same index (date) and non-null values
+    df_1.dropna(inplace=True)
+    df_2.dropna(inplace=True)
+    
+    # Merge the two dataframes based on the date index
+    merged_data = pd.concat([df_1, df_2], axis=1, join='inner')
+    
+    # Calculate the Pearson correlation coefficient
+    correlation = merged_data.corr().iloc[0, 1]
+
+    return correlation
+
+# Function to dynamically calculate threshold values for Bollinger Bands
+def calculate_bollinger_bands_thresholds(df, periods=5):
+    # Calculate the rolling average of the last 'periods' periods for bollinger_upper and bollinger_lower
+    df['rolling_upper_avg'] = df['bollinger_upper'].rolling(periods).mean()
+    df['rolling_lower_avg'] = df['bollinger_lower'].rolling(periods).mean()
+
+    # Take the last calculated average values
+    upper_threshold = df['rolling_upper_avg'].iloc[-1]
+    lower_threshold = df['rolling_lower_avg'].iloc[-1]
+
+    return (lower_threshold, upper_threshold)
+
+# Function to dynamically calculate Ichimoku Cloud threshold values
+def calculate_ichimoku_cloud_thresholds(df, moving_average_period=20):
+
+    # Calculate moving averages of Senkou Span A and Senkou Span B
+    df['senkou_span_a_ma'] = df['senkou_span_a'].rolling(window=moving_average_period).mean()
+    df['senkou_span_b_ma'] = df['senkou_span_b'].rolling(window=moving_average_period).mean()
+
+    # Set the threshold values for Ichimoku Cloud based on the moving averages
+    ichimoku_threshold = (df['senkou_span_b_ma'].iloc[-1], df['senkou_span_a_ma'].iloc[-1])
+
+    return ichimoku_threshold
+
+# Function to dynamically calculate MACD threshold values for upper and lower bounds
+def calculate_macd_thresholds(df, moving_average_period=20, lower_threshold_percentage=0.8):
+    # Calculate the MACD threshold based on a 20-period moving average of the crossover points
+    df['macd_crossover'] = (df['macd'] > df['signal']) & (df['macd'].shift(1) <= df['signal'].shift(1))
+    df['macd_crossover_ma'] = df['macd_crossover'].rolling(window=moving_average_period).mean()
+    upper_threshold = df['macd_crossover_ma'].shift(1).iloc[-1]  # Use the last value for upper threshold
+
+    # Calculate the lower threshold as a percentage of the upper threshold
+    lower_threshold = lower_threshold_percentage * upper_threshold
+
+    return (lower_threshold, upper_threshold)
+
+# Function to dynamically calculate OBV threshold values
+def calculate_obv_thresholds(df, moving_average_period=20):
+
+    # Calculate the OBV threshold based on a moving average
+    df['obv_threshold'] = df['obv'].rolling(window=moving_average_period).mean()
+
+    return (0, df['obv_threshold'].iloc[-1])
+
+# Function to process pair data
+def process_pair(exchange, pair, candle_type, history_limit, indicator_functions, indicators):
+    try:
+        bars = exchange.fetch_ohlcv(pair, timeframe=candle_type, limit=history_limit)
+
+        df = pd.DataFrame(bars[:-1], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+        # Apply each indicator function to the DataFrame
+        for indicator_function in indicator_functions:
+            df = indicator_function(df)
+
+        bollinger_thresholds = calculate_bollinger_bands_thresholds(df, periods=5)
+        ichimoku_thresholds = calculate_ichimoku_cloud_thresholds(df)
+        macd_thresholds = calculate_macd_thresholds(df)
+        obv_thresholds = calculate_obv_thresholds(df)
+
+        # Define threshold values for each indicator
+        thresholds = {
+            'rsi': (30, 70),  # RSI threshold values
+            'macd': macd_thresholds,  # MACD threshold values
+            'chaikin_oscillator': (-0.2, 0.2),  # Chaikin Oscillator threshold values
+            'bollinger_bands': bollinger_thresholds,  # Bollinger Bands threshold values
+            'atr': (14, 35),  # ATR threshold values
+            'stoch': (20, 80),  # Stochastic Oscillator threshold values
+            'ichimoku_cloud': ichimoku_thresholds,  # Ichimoku Cloud threshold values
+            'williams_percent_r': (20, 80),  # Williams %R threshold values
+            'adx': (25, 50),  # ADX threshold values
+            'obv': obv_thresholds,  # On-Balance Volume threshold values
+        }
+
+        # Initialize buy and sell signals as 0 (Hold)
+        df['buy_signal'] = 0
+        df['buy_signal_confidence'] = 0.0
+        df['sell_signal'] = 0
+        df['sell_signal_confidence'] = 0.0
+
+        # Loop through the DataFrame to calculate buy and sell signals and confidence levels
+        for i in range(len(df)):
+            bullish_indicators = 0
+            bearish_indicators = 0
+
+            for indicator in indicators:
+                buy_threshold, sell_threshold = thresholds[indicator]
+
+                if indicator == 'bollinger_bands':
+                    # Check if the upper Bollinger Band crosses the upper threshold
+                    if df['bollinger_upper'][i] > buy_threshold:
+                        bullish_indicators += 1
+                    # Check if the lower Bollinger Band crosses the lower threshold
+                    elif df['bollinger_lower'][i] < sell_threshold:
+                        bearish_indicators += 1
+                elif indicator == 'ichimoku_cloud':
+                    # Check if Senkou Span A crosses above Senkou Span B (upper_threshold) for bullish
+                    if df['senkou_span_a'][i] > buy_threshold:
+                        bullish_indicators += 1
+                    # Check if Senkou Span A crosses below Senkou Span B (lower_threshold) for bearish
+                    elif df['senkou_span_b'][i] < sell_threshold:
+                        bearish_indicators += 1
+                elif indicator == 'stoch':
+                    if df['stoch_k'][i] > df['stoch_d'][i] > buy_threshold:
+                        bullish_indicators += 1
+                    elif df['stoch_k'][i] < df['stoch_d'][i] < sell_threshold:
+                        bearish_indicators += 1
+                else:
+                    if df[indicator][i] > buy_threshold:
+                        bullish_indicators += 1
+                    elif df[indicator][i] < sell_threshold:
+                        bearish_indicators += 1
+
+            # Calculate buy signal and confidence level
+            if bullish_indicators > bearish_indicators:
+                df.at[i, 'buy_signal'] = 1
+                df.at[i, 'buy_signal_confidence'] = bullish_indicators / len(indicators)
+            else:
+                df.at[i, 'buy_signal'] = 0
+                df.at[i, 'buy_signal_confidence'] = 0.0  # No buy signal
+
+            # Calculate sell signal and confidence level
+            if bearish_indicators > bullish_indicators:
+                df.at[i, 'sell_signal'] = 1
+                df.at[i, 'sell_signal_confidence'] = bearish_indicators / len(indicators)
+            else:
+                df.at[i, 'sell_signal'] = 0
+                df.at[i, 'sell_signal_confidence'] = 0.0  # No sell signal
+
+        data_by_candle_type = df.to_dict()
+
+        return {
+            "pair": pair,
+            "candle_type": candle_type,
+            "data": data_by_candle_type
+        }
+
+    except Exception as e:
+        print(f"An error occurred for {pair}, {candle_type}: {e}")
+        return None
+
+def is_position_risky(df, var_threshold, candles_to_consider):
+
+    # Calculate the rolling minimum of the 'low' column over the specified number of candles
+    df['rolling_min_low'] = df['low'].rolling(window=candles_to_consider, min_periods=1).min()
+    df['rolling_max_high'] = df['high'].rolling(window=candles_to_consider, min_periods=1).max()
+
+    # Calculate the variation from the rolling minimum to the 'close' price
+    df['price_variation'] = (df['close'] - df['rolling_min_low']) / df['rolling_min_low']
+
+    # Check if any row has a variation exceeding the specified threshold (expressed as a percentage)
+    is_long_risky = any(df['price_variation'] > var_threshold / 100)
+    is_short_risky = any(df['price_variation'] < -var_threshold / 100)
+
+    return {"LONG": is_long_risky, "SHORT": is_short_risky}

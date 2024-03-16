@@ -1,16 +1,6 @@
 # Trading Bot - Futures Market on Binance
 
-This is an automated trading in the Futures market on Binance! This project is the first stage of developing a powerful trading bot that will harness the potential of technical strategies to maximize profits. Our aim is to create an intelligent, automated trading system that can outperform traditional human trading in the volatile world of cryptocurrencies.
-
-## Table of Contents
-
-- [Introduction](#introduction)
-- [Features](#features)
-- [Getting Started](#getting-started)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Contributing](#contributing)
-- [License](#license)
+This is an automated trading strategy in the Futures market on Binance! This project is the first stage of developing a powerful trading bot that will harness the potential of technical strategies to maximize profits. Our aim is to create an intelligent, automated trading system that can outperform traditional human trading in the volatile world of cryptocurrencies.
 
 ## Introduction
 
@@ -25,8 +15,6 @@ In this project, we'll be gathering and implementing various technical trading s
 - **Machine Learning:** Advanced machine learning models will be integrated to improve the bot's predictive power, helping it make informed decisions even in volatile markets.
 
 - **Customization:** You can customize the bot to fit your own trading preferences and risk tolerance.
-
-- **Security:** We take security seriously. The bot will implement industry-standard security measures to keep your assets safe.
 
 ## Getting Started
 

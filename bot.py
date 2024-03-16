@@ -1,17 +1,19 @@
+import os
 import ccxt
 import config
 import pandas as pd
 import numpy as np
-import schedule
 import warnings
-import time
+import schedule
 import json
-from dateutil import relativedelta
+from dateutil.relativedelta import relativedelta
 from datetime import datetime
+import concurrent.futures
 from utils import calculate_ema, calculate_macd, calculate_stochrsi, calculate_adx, \
     calculate_obv, calculate_chaikin_oscillator, calculate_pivot_points, \
         calculate_price_channels, calculate_mass_index, calculate_elliott_wave, calculate_williams_percent_r, \
-            calculate_bollinger_bands, calculate_ichimoku_cloud, calculate_atr, calculate_stoch
+            calculate_bollinger_bands, calculate_ichimoku_cloud, calculate_atr, calculate_stoch, \
+            calculate_correlation, process_pair, is_position_risky
 
 warnings.filterwarnings('ignore')
 
@@ -20,22 +22,28 @@ warnings.filterwarnings('ignore')
 
 """ Configuration Variables """
 
-pairs = ['ETH/USDT', 'ALPHA/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 
-         'REEF/USDT', 'DOGE/USDT', 'XRP/USDT', 'GALA/USDT', 'WAXP/USDT', 'C98/USDT', 
-         '1000SHIB/USDT', 'AVAX/USDT', 'DOT/USDT', 'LINK/USDT', 'UNI/USDT','ATOM/USDT'] 
+pairs = ['ALPHA/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 'REEF/USDT', 'DOGE/USDT', 'XRP/USDT', 'GALA/USDT', 'WAXP/USDT', 
+         'C98/USDT', '1000SHIB/USDT', 'AVAX/USDT', 'DOT/USDT', 'LINK/USDT', 'UNI/USDT','ATOM/USDT', 'ARPA/USDT', 'ONT/USDT', 'STMX/USDT', 
+         'DGB/USDT', 'ZIL/USDT', 'TRX/USDT', 'GAS/USDT', 'LTC/USDT','EOS/USDT', 'AUDIO/USDT', 'NEAR/USDT', 'ARPA/USDT', 'XMR/USDT', 
+         'DASH/USDT', 'XTZ/USDT', 'IOTA/USDT','BAT/USDT', 'IOST/USDT', 'KNC/USDT', 'ZRX/USDT', 'COMP/USDT', 'OMG/USDT', 'KAVA/USDT',
+         'RLC/USDT', 'SXP/USDT','ICX/USDT', 'FIL/USDT'] 
 
 candle_types = ['1m', '5m'] # Since we're trading on the Futures market with leverage.
-history_limit = 600 # 1500 is the largest size per API call.
-allowed_confidence_threshold = 0.63 # This is the minimum confidence level to make a buy/sell decision.
-trade_quantity_amount = 25.00 # Quantity in USDT.
-leverage = 7 # Leverage multiplier.
+history_limit = 100 # 1500 is the largest size per API call.
+allowed_confidence_threshold = 0.65 # This is the minimum confidence level to make a buy/sell decision.
+trade_quantity_amount = 80.00 # Quantity in USDT.
+leverage = 5 # Leverage multiplier.
 type_of_order = 'market' # limit, market.
-expected_return_level = 4 # %
-stop_loss_level = 3.5 # %
-max_allowed_positions = 4 # Number of positions allowed in the trading strategy.
-max_correlation_value = 9 # %
+expected_return_level = 2 # %
+stop_loss_level = 1.5 # %
+max_allowed_positions = 2 # Number of positions allowed in the trading strategy.
+max_correlation_value = 80 # %
 recently_traded_cryptos_path = "recently_traded_crypto.json"
-hours_number_until_trade_again = 1 # Number of hours to wait until asset can be tradable again.
+hours_number_until_trade_again = 5 # Number of hours to wait until asset can be tradable again.
+batch_size = 10  # Number of pairs to process in each batch.
+var_threshold = 5 # %. Max variation allowed before placing a trade.
+candles_to_consider = 50 # Number of candles to consider when calculating the var_threshold
+num_cores = os.cpu_count() # Get the number of CPU cores.
 
 exchange = ccxt.binance({
     "apiKey": config.API_KEY_PRODUCTION,
@@ -49,6 +57,18 @@ exchange.verbose = False  # debug output
 
 #____________________________________________________________________________________________________________
 
+def place_order(symbol, quantity, side, price, order_type, params):
+    try:
+        print(f"Placing {side} order for {quantity} {symbol} at price {price}")
+        if order_type == 'limit':
+            order = exchange.create_order(symbol=symbol, type=order_type, side=side, amount=quantity, price=price, params=params)
+        elif order_type == 'market':
+            order = exchange.create_order(symbol=symbol, type=order_type, side=side, amount=quantity, params=params)
+        print("Order details:")
+        print(order)
+    except Exception as e:
+        print(f"An error occurred while placing the order: {e}")
+
 def get_account_positions(pair):
     balance = exchange.fetch_balance()
     positions = balance['info']['positions']
@@ -58,7 +78,7 @@ def get_account_positions(pair):
         if position['symbol'] == pair:
             matching_positions.append(position)
     return matching_positions
-            
+
 def set_leverage(leverage, pair):
     pair = pair.replace('/', '')
     exchange.set_leverage(leverage, pair)
@@ -85,221 +105,75 @@ def get_open_futures_positions():
         print(f"Error: {str(e)}")
         return []
 
-def calculate_correlation(pair1_data, pair2_data):
-    """
-    Calculate the Pearson correlation coefficient between two cryptocurrency pairs.
+indicator_functions = [
+    calculate_stochrsi,
+    calculate_macd,
+    calculate_ema,
+    calculate_adx,
+    calculate_chaikin_oscillator,
+    calculate_pivot_points,
+    calculate_price_channels,
+    calculate_mass_index,
+    calculate_elliott_wave,
+    calculate_williams_percent_r,
+    calculate_obv,
+    calculate_bollinger_bands,
+    calculate_ichimoku_cloud,
+    calculate_atr,
+    calculate_stoch
+]
 
-    Parameters:
-    - pair1_data: A pandas Series or DataFrame with historical price data for the first cryptocurrency pair.
-    - pair2_data: A pandas Series or DataFrame with historical price data for the second cryptocurrency pair.
-
-    Returns:
-    - correlation: The Pearson correlation coefficient between the two pairs.
-    """
-    # Convert the dictionary to a pandas DataFrame
-    df_1 = pd.DataFrame(list(pair1_data.items()), columns=["index", "close"])
-    df_2 = pd.DataFrame(list(pair2_data.items()), columns=["index", "close"])
-    # Ensure that both dataframes have the same index (date) and non-null values
-    df_1.dropna(inplace=True)
-    df_2.dropna(inplace=True)
-    
-    # Merge the two dataframes based on the date index
-    merged_data = pd.concat([df_1, df_2], axis=1, join='inner')
-    
-    # Calculate the Pearson correlation coefficient
-    correlation = merged_data.corr().iloc[0, 1]
-
-    return correlation
-
+# technical indicators to use
+indicators = [
+    'rsi',
+    'macd',
+    'chaikin_oscillator',
+    'bollinger_bands',
+    'atr',
+    'stoch',
+    'ichimoku_cloud',
+    'williams_percent_r',
+    'adx',
+    'obv',
+]
 #____________________________________________________________________________________________________________
 
 def run_bot():
 
+    print("\nProcessing data...\n")
+    print(f"\nNumber of cores: {num_cores}\n")
+
+    results = []
     trades_structure = []
-    for pair in pairs:
-        print(f"Fetching new bars for {pair}")
-        data_by_candle_type = {}
+    # Create a pool of worker processes
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cores*4 or 4) as executor:
         for candle_type in candle_types:
-            try:
-                bars = exchange.fetch_ohlcv(pair, timeframe=candle_type, limit=history_limit)
-
-                df = pd.DataFrame(bars[:-1], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-
-                indicator_functions = [
-                    calculate_stochrsi,
-                    calculate_macd,
-                    calculate_ema,
-                    calculate_adx,
-                    calculate_chaikin_oscillator,
-                    calculate_pivot_points,
-                    calculate_price_channels,
-                    calculate_mass_index,
-                    calculate_elliott_wave,
-                    calculate_williams_percent_r,
-                    calculate_obv,
-                    calculate_bollinger_bands,
-                    calculate_ichimoku_cloud,
-                    calculate_atr,
-                    calculate_stoch
-                ]
-
-                # Apply each indicator function to the DataFrame
-                for indicator_function in indicator_functions:
-                    df = indicator_function(df)
-
-                # Function to dynamically calculate threshold values for Bollinger Bands
-                def calculate_bollinger_bands_thresholds(df, periods=5):
-                    # Calculate the rolling average of the last 'periods' periods for bollinger_upper and bollinger_lower
-                    df['rolling_upper_avg'] = df['bollinger_upper'].rolling(periods).mean()
-                    df['rolling_lower_avg'] = df['bollinger_lower'].rolling(periods).mean()
-
-                    # Take the last calculated average values
-                    upper_threshold = df['rolling_upper_avg'].iloc[-1]
-                    lower_threshold = df['rolling_lower_avg'].iloc[-1]
-
-                    return (lower_threshold, upper_threshold)
-
-                # Function to dynamically calculate Ichimoku Cloud threshold values
-                def calculate_ichimoku_cloud_thresholds(df, moving_average_period=20):
-
-                    # Calculate moving averages of Senkou Span A and Senkou Span B
-                    df['senkou_span_a_ma'] = df['senkou_span_a'].rolling(window=moving_average_period).mean()
-                    df['senkou_span_b_ma'] = df['senkou_span_b'].rolling(window=moving_average_period).mean()
-
-                    # Set the threshold values for Ichimoku Cloud based on the moving averages
-                    ichimoku_threshold = (df['senkou_span_b_ma'].iloc[-1], df['senkou_span_a_ma'].iloc[-1])
-
-                    return ichimoku_threshold
-                
-                # Function to dynamically calculate MACD threshold values for upper and lower bounds
-                def calculate_macd_thresholds(df, moving_average_period=20, lower_threshold_percentage=0.8):
-                    # Calculate the MACD threshold based on a 20-period moving average of the crossover points
-                    df['macd_crossover'] = (df['macd'] > df['signal']) & (df['macd'].shift(1) <= df['signal'].shift(1))
-                    df['macd_crossover_ma'] = df['macd_crossover'].rolling(window=moving_average_period).mean()
-                    upper_threshold = df['macd_crossover_ma'].shift(1).iloc[-1]  # Use the last value for upper threshold
-
-                    # Calculate the lower threshold as a percentage of the upper threshold
-                    lower_threshold = lower_threshold_percentage * upper_threshold
-
-                    return (lower_threshold, upper_threshold)
-                
-                # Function to dynamically calculate OBV threshold values
-                def calculate_obv_thresholds(df, moving_average_period=20):
-
-                    # Calculate the OBV threshold based on a moving average
-                    df['obv_threshold'] = df['obv'].rolling(window=moving_average_period).mean()
-
-                    return (0, df['obv_threshold'].iloc[-1])
-
-                bollinger_thresholds = calculate_bollinger_bands_thresholds(df, periods=5)
-                ichimoku_thresholds = calculate_ichimoku_cloud_thresholds(df)
-                macd_thresholds = calculate_macd_thresholds(df)
-                obv_thresholds = calculate_obv_thresholds(df)
-
-                # technical indicators to use
-                indicators = [
-                    'rsi',
-                    'macd',
-                    'chaikin_oscillator',
-                    'bollinger_bands',
-                    'atr',
-                    'stoch',
-                    'ichimoku_cloud',
-                    'williams_percent_r',
-                    'adx',
-                    'obv',
-                ]
-
-                # Define threshold values for each indicator
-                thresholds = {
-                    'rsi': (30, 70), # RSI threshold values
-                    'macd': macd_thresholds, # MACD threshold values
-                    'chaikin_oscillator': (-0.2, 0.2), # Chaikin Oscillator threshold values
-                    'bollinger_bands': bollinger_thresholds, # Bollinger Bands threshold values
-                    'atr': (14, 35), # ATR threshold values
-                    'stoch': (20, 80), # Stochastic Oscillator threshold values
-                    'ichimoku_cloud': ichimoku_thresholds, # Ichimoku Cloud threshold values
-                    'williams_percent_r': (20, 80), # Williams %R threshold values
-                    'adx': (25, 50), # ADX threshold values
-                    'obv': obv_thresholds, # On-Balance Volume threshold values
-                }
-
-                # Initialize buy and sell signals as 0 (Hold)
-                df['buy_signal'] = 0
-                df['buy_signal_confidence'] = 0.0
-                df['sell_signal'] = 0
-                df['sell_signal_confidence'] = 0.0
-
-                # Loop through the DataFrame to calculate buy and sell signals and confidence levels
-                for i in range(len(df)):
-                    bullish_indicators = 0
-                    bearish_indicators = 0
-
-                    for indicator in indicators:
-
-                        buy_threshold, sell_threshold = thresholds[indicator]
-
-                        if indicator == 'bollinger_bands':
-                            # Check if the upper Bollinger Band crosses the upper threshold
-                            if df['bollinger_upper'][i] > buy_threshold:
-                                bullish_indicators += 1
-                            # Check if the lower Bollinger Band crosses the lower threshold
-                            elif df['bollinger_lower'][i] < sell_threshold:
-                                bearish_indicators += 1
-
-                        elif indicator == 'ichimoku_cloud':
-                            # Check if Senkou Span A crosses above Senkou Span B (upper_threshold) for bullish
-                            if df['senkou_span_a'][i] > buy_threshold:
-                                bullish_indicators += 1
-                            # Check if Senkou Span A crosses below Senkou Span B (lower_threshold) for bearish
-                            elif df['senkou_span_b'][i] < sell_threshold:
-                                bearish_indicators += 1
-
-                        elif indicator == 'stoch':
-                            if df['stoch_k'][i] > df['stoch_d'][i] > buy_threshold:
-                                bullish_indicators += 1
-                            elif df['stoch_k'][i] < df['stoch_d'][i] < sell_threshold:
-                                bearish_indicators += 1
-
-                        else:
-                            if df[indicator][i] > buy_threshold:
-                                bullish_indicators += 1
-                            elif df[indicator][i] < sell_threshold:
-                                bearish_indicators += 1
-
-                    # Calculate buy signal and confidence level
-                    if bullish_indicators > bearish_indicators:
-                        df.at[i, 'buy_signal'] = 1
-                        df.at[i, 'buy_signal_confidence'] = bullish_indicators / len(indicators)
-                    else:
-                        df.at[i, 'buy_signal'] = 0
-                        df.at[i, 'buy_signal_confidence'] = 0.0  # No buy signal
-
-                    # Calculate sell signal and confidence level
-                    if bearish_indicators > bullish_indicators:
-                        df.at[i, 'sell_signal'] = 1
-                        df.at[i, 'sell_signal_confidence'] = bearish_indicators / len(indicators)
-                    else:
-                        df.at[i, 'sell_signal'] = 0
-                        df.at[i, 'sell_signal_confidence'] = 0.0  # No sell signal
-
-                data_by_candle_type[candle_type] = df.to_dict()
-
-            except Exception as e:
-                print(f"An error occured: {e}")
-                time.sleep(5)
-                return e
-
-        trades_structure.append({
-            "pair":pair,
-            "candle_types":data_by_candle_type
-        })
+            for i in range(0, len(pairs), batch_size):
+                batch_pairs = pairs[i:i + batch_size]
+                futures = {executor.submit(process_pair, exchange, pair, candle_type, history_limit, indicator_functions, indicators): pair for pair in batch_pairs}
+                for future in concurrent.futures.as_completed(futures):
+                    pair = futures[future]
+                    result = future.result()
+                    results.append(result)
+    
+    # Process the results to construct trades_structure
+    for result in results:
+        if result:
+            if not any(x['pair'] == result['pair'] for x in trades_structure):
+                trade_structure_obj = {}
+                trade_structure_obj['pair'] = result['pair']
+                trade_structure_obj['candle_types'] = {result['candle_type']: result['data']}
+                trades_structure.append(trade_structure_obj)
+            else:
+                for x in range(len(trades_structure)):
+                    if trades_structure[x]['pair'] == result['pair']:
+                        trades_structure[x]['candle_types'][result['candle_type']] = result['data']
 
 
     """ Calculate Correlations """
 
-    print("Hold on! Calculating correlations...")
+    print("\nHold on! Calculating correlations...\n")
+
     correlations = []
     for candle_type in candle_types: 
         for j in range(len(trades_structure)):
@@ -341,17 +215,23 @@ def run_bot():
         print()
         
         signals = []
-        current_price = 0.0
+        
+        # Get current price
+        last_price_bars = exchange.fetch_ticker(trades_structure[i]['pair'])
+        last_price = last_price_bars['last']
+        current_price = float(last_price)
+        risky_position_obj = {"LONG": False, "SHORT": False}
+
         for candle_type in candle_types: 
 
             df = pd.DataFrame(trades_structure[i]['candle_types'][candle_type])
 
-            # Get las price of this pair
-            if candle_type == '1m':
-                current_price += float(df['close'].iloc[-1])
+            if candle_type == '5m':
+                risky_position_obj = is_position_risky(df, var_threshold, candles_to_consider)
             
             # Get the last 5 rows of the DataFrame
             last_5_rows = df[['buy_signal', 'buy_signal_confidence', 'sell_signal', 'sell_signal_confidence']].tail(5)
+            df = pd.DataFrame()
 
             # Extract the last row for 'buy_signal' and 'sell_signal'
             last_row = last_5_rows.iloc[-1]
@@ -435,10 +315,10 @@ def run_bot():
             if set_position_side == 'SHORT':
                 if (price_change <= (expected_return_level * -1)):
                     print("Triggering TAKE PROFIT")
-                if (price_change > stop_loss_level):
+                if (price_change >= stop_loss_level):
                     print("Triggering STOP LOSS")
 
-                if (price_change <= (expected_return_level * -1)) or (price_change > stop_loss_level):
+                if (price_change <= (expected_return_level * -1)) or (price_change >= stop_loss_level):
 
                     params = {'positionSide': 'SHORT', 'leverage':leverage}
 
@@ -446,20 +326,20 @@ def run_bot():
                         data = json.load(json_file)
                     
                     try:
-                        place_order(symbol=trades_structure[i]['pair'], quantity=set_position_amount, side='buy', price=current_price, order_type=type_of_order, params=params)
+                        place_order(symbol=trades_structure[i]['pair'], quantity=set_position_amount, side='sell', price=current_price, order_type=type_of_order, params=params)
                         
                         pair_found = False
                         for pair in data['pairs']:
                             if trades_structure[i]['pair'] == pair['symbol']:
-                                pair['closed_time'] = datetime.now()
+                                pair['closed_time'] = datetime.now().timestamp()
                                 pair_found = True
                                 break
 
                         if not pair_found:
-                            data['pairs'].append({"symbol":trades_structure[i]['pair'], "closed_time":datetime.now()})
+                            data['pairs'].append({"symbol":trades_structure[i]['pair'], "closed_time":datetime.now().timestamp()})
                         
                         with open(recently_traded_cryptos_path, 'w') as json_file:
-                            json.dump(data, json_file, indent=4)
+                            json.dump(data, json_file)
 
                     except Exception as e:
                         print(f"An error occured: {e}")
@@ -467,10 +347,10 @@ def run_bot():
             if set_position_side == 'LONG':
                 if (price_change >= expected_return_level):
                     print("Triggering TAKE PROFIT")
-                if (price_change < (stop_loss_level * -1)):
+                if (price_change <= (stop_loss_level * -1)):
                     print("Triggering STOP LOSS")
 
-                if (price_change >= expected_return_level) or (price_change < (stop_loss_level * -1)):
+                if (price_change >= expected_return_level) or (price_change <= (stop_loss_level * -1)):
 
                     params = {'positionSide': 'LONG', 'leverage':leverage}
 
@@ -483,22 +363,21 @@ def run_bot():
                         pair_found = False
                         for pair in data['pairs']:
                             if trades_structure[i]['pair'] == pair['symbol']:
-                                pair['closed_time'] = datetime.now()
+                                pair['closed_time'] = datetime.now().timestamp()
                                 pair_found = True
                                 break
 
                         if not pair_found:
-                            data['pairs'].append({"symbol":trades_structure[i]['pair'], "closed_time":datetime.now()})
+                            data['pairs'].append({"symbol":trades_structure[i]['pair'], "closed_time":datetime.now().timestamp()})
 
                         with open(recently_traded_cryptos_path, 'w') as json_file:
-                            json.dump(data, json_file, indent=4)
+                            json.dump(data, json_file)
 
                     except Exception as e:
                         print(f"An error occured: {e}")
 
         if final_signal:    
-            print("|"*100)
-            print(final_signal)
+            print(f"{str(final_signal).upper()} "*5)
             if in_position and not has_notional:  
                 # If stop loss and take profit are not triggered, check for contrary signals and close if it's the case
                 if final_signal == 'buy' and set_position_side == 'SHORT':
@@ -511,7 +390,7 @@ def run_bot():
                     print(f"Trying to cancel an offer: {set_position_side}")
                     params = {'positionSide': 'LONG', 'leverage':leverage}
                     target_price = current_price * 1.01
-                    place_order(symbol=trades_structure[i]['pair'], quantity=set_position_amount, side='buy', price=target_price, order_type=type_of_order, params=params)
+                    place_order(symbol=trades_structure[i]['pair'], quantity=set_position_amount, side='sell', price=target_price, order_type=type_of_order, params=params)
 
             break_trading_process = False
             # TRADING PART RIGHT HERE
@@ -522,44 +401,67 @@ def run_bot():
 
                 if len(data['pairs']) > 0:
                     for traded_pair in data['pairs']:
-                        if (traded_pair['symbol'] == trades_structure[i]['pair']):
+                        if traded_pair['symbol'] == trades_structure[i]['pair']:
                             if traded_pair['closed_time']:
-                                if (traded_pair['closed_time'] + relativedelta(h=hours_number_until_trade_again) <= datetime.now()):
-                                    print(f"This pair cannot be traded, waint until {traded_pair['closed_time']}, so that you can trade it")
+                                closed_time = datetime.fromtimestamp(traded_pair['closed_time'])
+                                desired_timedelta = relativedelta(hours=hours_number_until_trade_again)
+                                print(f"Closed time: {closed_time}", f"Due time: {closed_time + desired_timedelta}")
+                                if datetime.now() <= closed_time + desired_timedelta:
+                                    print(f"This pair cannot be traded, wait until {closed_time + desired_timedelta}, so that you can trade it")
                                     break_trading_process = True
 
                 if not break_trading_process:
-                    if not len(all_open_positions) >= max_allowed_positions:
+                    if len(all_open_positions) < max_allowed_positions:
                         
                         corr_value = None  # Initialize corr_value to None
                         if len(all_open_positions) > 0:
                             for open_position in all_open_positions:
-                                key1 = f"({trades_structure[i]['pair']}, {open_position})"
-                                key2 = f"({open_position}, {trades_structure[i]['pair']})"
+                                open_position_symbol = open_position['symbol'].replace("USDT", "/USDT")
+                                key1 = (f"{trades_structure[i]['pair']}", f"{open_position_symbol}")
+                                key2 = (f"{open_position_symbol}", f"{trades_structure[i]['pair']}")
 
                                 if key1 in pair_means.keys():
                                     corr_value = pair_means[key1]
                                     break
 
-                                if key2 in pair_means.keys():
+                                elif key2 in pair_means.keys():
                                     corr_value = pair_means[key2]
                                     break
+                        
+                        if not risky_position_obj['LONG' if final_signal == 'buy' else 'SHORT']:
+                            if not len(all_open_positions) == 0:
 
-                        if ((corr_value) and (not abs(corr_value) > max_correlation_value/100) and (len(all_open_positions) > 0)) or (len(all_open_positions) == 0):
-
-                            print(f"Trying to create an offer: {final_signal}")
-                            if final_signal == 'buy':
-                                params = {'positionSide': 'LONG', 'leverage':leverage}
-                                new_quantity = (trade_quantity_amount * leverage) / current_price
-                                target_price = current_price * 0.99
-                                place_order(symbol=trades_structure[i]['pair'], quantity=new_quantity, side='buy', price=target_price, order_type=type_of_order, params=params)
+                                if (corr_value):
+                                    if (abs(corr_value) <= max_correlation_value/100):
+                                        print(f"Trying to create an offer: {final_signal}")
+                                        if final_signal == 'buy':
+                                            params = {'positionSide': 'LONG', 'leverage':leverage}
+                                            new_quantity = (trade_quantity_amount * leverage) / current_price
+                                            target_price = current_price * 0.99
+                                            place_order(symbol=trades_structure[i]['pair'], quantity=new_quantity, side='buy', price=target_price, order_type=type_of_order, params=params)
+                                        else:
+                                            params = {'positionSide': 'SHORT', 'leverage':leverage}
+                                            new_quantity = (trade_quantity_amount * leverage) / current_price
+                                            target_price = current_price * 1.01
+                                            place_order(symbol=trades_structure[i]['pair'], quantity=new_quantity, side='sell', price=target_price, order_type=type_of_order, params=params)
+                                    else:
+                                        print(f"This pair: {trades_structure[i]['pair']} is highly correlated with an open position. We won't move forward.")
+                            
                             else:
-                                params = {'positionSide': 'SHORT', 'leverage':leverage}
-                                new_quantity = (trade_quantity_amount * leverage) / current_price
-                                target_price = current_price * 1.01
-                                place_order(symbol=trades_structure[i]['pair'], quantity=new_quantity, side='sell', price=target_price, order_type=type_of_order, params=params)
+                                print(f"Trying to create an offer: {final_signal}")
+                                if final_signal == 'buy':
+                                    params = {'positionSide': 'LONG', 'leverage':leverage}
+                                    new_quantity = (trade_quantity_amount * leverage) / current_price
+                                    target_price = current_price * 0.99
+                                    place_order(symbol=trades_structure[i]['pair'], quantity=new_quantity, side='buy', price=target_price, order_type=type_of_order, params=params)
+                                else:
+                                    params = {'positionSide': 'SHORT', 'leverage':leverage}
+                                    new_quantity = (trade_quantity_amount * leverage) / current_price
+                                    target_price = current_price * 1.01
+                                    place_order(symbol=trades_structure[i]['pair'], quantity=new_quantity, side='sell', price=target_price, order_type=type_of_order, params=params)
                         else:
-                            print(f"This pair: {trades_structure[i]['pair']} is highly correlated with an open position. We won't move forward.")
+                            print("This is a risky position. We are leaving it aside.")
+
                     else:
                         print("You cannot add another pair to your trades. Wait until they close.")
         else:
@@ -569,8 +471,8 @@ def run_bot():
         print("_"*120)
         print()
 
-schedule.every(30).seconds.do(run_bot)
+if __name__ == "__main__":
+    schedule.every(5).seconds.do(run_bot)
 
-while True:
-    schedule.run_pending()
-    time.sleep(5)
+    while True:
+        schedule.run_pending()
