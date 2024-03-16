@@ -32,3 +32,16 @@ To install the necessary dependencies for the Trading Bot, you can use Python's 
 
 ```bash
 pip install -r requirements.txt
+
+```
+
+## Running
+
+Start earning extra money now!
+
+````bash
+chmod +x run_bot.sh
+
+./run_bot.sh
+
+```
