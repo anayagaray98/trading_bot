@@ -21,7 +21,7 @@ pairs = ['ALPHA/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 'REEF/USDT', 'XRP/U
          'RLC/USDT', 'SXP/USDT','ICX/USDT', 'FIL/USDT'] 
 
 candle_types = ['1m', '5m'] # For intraday strategy.
-history_limit = 100 # 1500 is the largest size per API call.
+history_limit = 100 # 1500 is the largest size per API call. But, the longer the history, the slower the bot.
 allowed_confidence_threshold = 0.65 # This is the minimum confidence level to make a buy/sell decision.
 trade_quantity_amount = 80.00 # Quantity in USDT.
 leverage = 3 # Leverage multiplier.
@@ -33,8 +33,8 @@ max_correlation_value = 80 # %
 recently_traded_cryptos_path = "trades_history/futures_traded_cryptos.json"
 hours_number_until_trade_again = 5 # Number of hours to wait until asset can be tradable again.
 batch_size = 10  # Number of pairs to process in each batch.
-var_threshold = 5 # %. Max variation allowed before placing a trade.
-candles_to_consider = 50 # Number of candles to consider when calculating the var_threshold
+var_threshold = 5 # %. Max variation allowed.
+candles_to_consider = 50 # Number of candles to consider when calculating the variation
 num_cores = os.cpu_count() # Get the number of CPU cores.
 
 exchange = ccxt.binance({
@@ -48,37 +48,43 @@ exchange = ccxt.binance({
 exchange.verbose = False  # debug output
 
 def place_order(symbol, quantity, side, price, order_type, params):
+
     try:
         print(f"Placing {side} order for {quantity} {symbol} at price {price}")
+
         if order_type == 'limit':
             order = exchange.create_order(symbol=symbol, type=order_type, side=side, amount=quantity, price=price, params=params)
         elif order_type == 'market':
             order = exchange.create_order(symbol=symbol, type=order_type, side=side, amount=quantity, params=params)
+
         print("Order details:")
         print(order)
+
     except Exception as e:
         print(f"An error occurred while placing the order: {e}")
 
 def get_account_positions(pair):
+
     balance = exchange.fetch_balance()
     positions = balance['info']['positions']
     pair = pair.replace('/', '')
     matching_positions = []
+
     for position in positions:
         if position['symbol'] == pair:
             matching_positions.append(position)
+
     return matching_positions
 
-def set_leverage(leverage, pair):
-    pair = pair.replace('/', '')
-    exchange.set_leverage(leverage, pair)
-
 def get_open_futures_positions():
+    
     try:
         balance = exchange.fetch_balance()
         positions = balance['info']['positions']
         open_positions = [position for position in positions if float(position['positionAmt']) != 0]
+
         return open_positions
+    
     except Exception as e:
         print(f"Error: {str(e)}")
         return []
@@ -122,12 +128,15 @@ def run_bot():
 
     results = []
     trades_structure = []
+
     # Create a pool of worker processes
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_cores*4 or 4) as executor:
         for candle_type in candle_types:
             for i in range(0, len(pairs), batch_size):
+
                 batch_pairs = pairs[i:i + batch_size]
                 futures = {executor.submit(process_pair, exchange, pair, candle_type, history_limit, indicator_functions, indicators): pair for pair in batch_pairs}
+
                 for future in concurrent.futures.as_completed(futures):
                     pair = futures[future]
                     result = future.result()
@@ -235,7 +244,7 @@ def run_bot():
                     else:
                         signals.append(None)
         
-        set_leverage(leverage, trades_structure[i]['pair'])
+        exchange.set_leverage(leverage, trades_structure[i]['pair'].replace('/', '')) # Setting leverage multiplier
         pair_positions = get_account_positions(trades_structure[i]['pair'])
 
         in_position = False
@@ -370,6 +379,7 @@ def run_bot():
                     place_order(symbol=trades_structure[i]['pair'], quantity=set_position_amount, side='sell', price=target_price, order_type=type_of_order, params=params)
 
             break_trading_process = False
+            
             # TRADING PART RIGHT HERE
             if not in_position and not has_notional:
 

@@ -15,7 +15,7 @@ while true; do
     # Kill all previous bot script processes
     pkill -9 -f "$bot_script"
 
-    # Run your Python script in the background and capture its PID
+    # Run Python script in the background and capture its PID
     python3 "$bot_script" >> "$file_path" &
     bot_pid=$!
 

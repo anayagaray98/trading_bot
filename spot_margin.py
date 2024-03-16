@@ -18,12 +18,12 @@ warnings.filterwarnings('ignore')
 
 pairs = ['FTT/USDT'] 
 
-candle_types = ['5m', '1h'] # For intraday strategy.
-history_limit = 100 # 1500 is the largest size per API call.
+candle_types = ['5m', '1h'] # For overnight strategy.
+history_limit = 100 # 1500 is the largest size per API call. But, the longer the history, the slower the bot. 
 margin_mode = 'cross' # it can be cross or isolated
 allowed_confidence_threshold = 0.65 # This is the minimum confidence level to make a buy/sell decision.
 trade_quantity_amount = 500.00 # Quantity in USDT.
-leverage = 3 # Leverage multiplier.s
+leverage = 3 # Leverage multiplier.
 type_of_order = 'market' # limit, market.
 expected_return_level = 5 # %
 stop_loss_level = 1.5 # %
@@ -32,8 +32,8 @@ max_correlation_value = 80 # %
 recently_traded_cryptos_path = "trades_history/spot_margin_traded_cryptos.json"
 hours_number_until_trade_again = 5 # Number of hours to wait until asset can be tradable again.
 batch_size = 10  # Number of pairs to process in each batch.
-var_threshold = 5 # %. Max variation allowed before placing a trade.
-candles_to_consider = 50 # Number of candles to consider when calculating the var_threshold
+var_threshold = 5 # %. Max variation allowed.
+candles_to_consider = 50 # Number of candles to consider when calculating the variation
 num_cores = os.cpu_count() # Get the number of CPU cores.
 
 exchange = ccxt.binance({
@@ -49,7 +49,7 @@ def place_order(symbol, quantity, side, price, order_type, extra_params={}):
 
         params = {'margin': True, 'marginMode': margin_mode}
 
-        for key, value in extra_params:
+        for key, value in extra_params.items():
             params[key] = value
 
         if order_type == 'limit':
@@ -62,23 +62,19 @@ def place_order(symbol, quantity, side, price, order_type, extra_params={}):
         with open(recently_traded_cryptos_path, 'r') as json_file:
             data = json.load(json_file)
             
-        try:                
-            pair_found = False
-            for pair in data['pairs']:
-                if symbol == pair['symbol']:
-                    pair['closed_time'] = datetime.now().timestamp() if side == 'sell' else None
-                    pair['entry_price'] = price
-                    pair_found = True
-                    break
+        pair_found = False
+        for pair in data['pairs']:
+            if symbol == pair['symbol']:
+                pair['closed_time'] = datetime.now().timestamp() if side == 'sell' else None
+                pair['entry_price'] = price
+                pair_found = True
+                break
 
-            if not pair_found:
-                data['pairs'].append({"symbol":symbol, "closed_time":datetime.now().timestamp() if side == 'sell' else None, "entry_price":price})
+        if not pair_found:
+            data['pairs'].append({"symbol":symbol, "closed_time":datetime.now().timestamp() if side == 'sell' else None, "entry_price":price})
 
-            with open(recently_traded_cryptos_path, 'w') as json_file:
-                json.dump(data, json_file, indent=4)
-
-        except Exception as e:
-            print(f"An error occured: {e}")
+        with open(recently_traded_cryptos_path, 'w') as json_file:
+            json.dump(data, json_file, indent=4)
 
         print("Order details:")
         print(order)
@@ -177,6 +173,7 @@ def run_bot():
 
     results = []
     trades_structure = []
+    
     # Create a pool of worker processes
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_cores*4 or 4) as executor:
         for candle_type in candle_types:
