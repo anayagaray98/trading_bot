@@ -16,23 +16,21 @@ warnings.filterwarnings('ignore')
 
 """ Configuration Variables """
 
-pairs = ['ALPHA/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 'REEF/USDT', 'DOGE/USDT', 'XRP/USDT', 'GALA/USDT', 'WAXP/USDT', 
-         'C98/USDT', '1000SHIB/USDT', 'AVAX/USDT', 'DOT/USDT', 'LINK/USDT', 'UNI/USDT','ATOM/USDT', 'ARPA/USDT', 'ONT/USDT', 'STMX/USDT', 
-         'DGB/USDT', 'ZIL/USDT', 'TRX/USDT', 'GAS/USDT', 'LTC/USDT','EOS/USDT', 'AUDIO/USDT', 'NEAR/USDT', 'ARPA/USDT', 'XMR/USDT', 
-         'DASH/USDT', 'XTZ/USDT', 'IOTA/USDT','BAT/USDT', 'IOST/USDT', 'KNC/USDT', 'ZRX/USDT', 'COMP/USDT', 'OMG/USDT', 'KAVA/USDT',
+pairs = ['ALPHA/USDT', 'ADA/USDT', 'MATIC/USDT', 'FLM/USDT', 'REEF/USDT', 'XRP/USDT', 'GALA/USDT', 'WAXP/USDT', 
+         'C98/USDT', 'AVAX/USDT', 'DOT/USDT', 'LINK/USDT', 'UNI/USDT','ATOM/USDT', 'ARPA/USDT', 'ONT/USDT', 'STMX/USDT', 
          'RLC/USDT', 'SXP/USDT','ICX/USDT', 'FIL/USDT'] 
 
-candle_types = ['1m', '5m'] # Since we're trading on the Futures market with leverage.
+candle_types = ['1m', '5m'] # For intraday strategy.
 history_limit = 100 # 1500 is the largest size per API call.
 allowed_confidence_threshold = 0.65 # This is the minimum confidence level to make a buy/sell decision.
 trade_quantity_amount = 80.00 # Quantity in USDT.
-leverage = 5 # Leverage multiplier.
+leverage = 3 # Leverage multiplier.
 type_of_order = 'market' # limit, market.
-expected_return_level = 2 # %
+expected_return_level = 5 # %
 stop_loss_level = 1.5 # %
 max_allowed_positions = 2 # Number of positions allowed in the trading strategy.
 max_correlation_value = 80 # %
-recently_traded_cryptos_path = "recently_traded_crypto.json"
+recently_traded_cryptos_path = "futures_traded_cryptos.json"
 hours_number_until_trade_again = 5 # Number of hours to wait until asset can be tradable again.
 batch_size = 10  # Number of pairs to process in each batch.
 var_threshold = 5 # %. Max variation allowed before placing a trade.
@@ -74,18 +72,6 @@ def get_account_positions(pair):
 def set_leverage(leverage, pair):
     pair = pair.replace('/', '')
     exchange.set_leverage(leverage, pair)
-
-def place_order(symbol, quantity, side, price, order_type, params):
-    try:
-        print(f"Placing {side} order for {quantity} {symbol} at price {price}")
-        if order_type == 'limit':
-            order = exchange.create_order(symbol=symbol, type=order_type, side=side, amount=quantity, price=price, params=params)
-        elif order_type == 'market':
-            order = exchange.create_order(symbol=symbol, type=order_type, side=side, amount=quantity, params=params)
-        print("Order details:")
-        print(order)
-    except Exception as e:
-        print(f"An error occurred while placing the order: {e}")
 
 def get_open_futures_positions():
     try:
@@ -330,7 +316,7 @@ def run_bot():
                             data['pairs'].append({"symbol":trades_structure[i]['pair'], "closed_time":datetime.now().timestamp()})
                         
                         with open(recently_traded_cryptos_path, 'w') as json_file:
-                            json.dump(data, json_file)
+                            json.dump(data, json_file, indent=4)
 
                     except Exception as e:
                         print(f"An error occured: {e}")
@@ -362,7 +348,7 @@ def run_bot():
                             data['pairs'].append({"symbol":trades_structure[i]['pair'], "closed_time":datetime.now().timestamp()})
 
                         with open(recently_traded_cryptos_path, 'w') as json_file:
-                            json.dump(data, json_file)
+                            json.dump(data, json_file, indent=4)
 
                     except Exception as e:
                         print(f"An error occured: {e}")
