@@ -39,7 +39,7 @@ pip install -r requirements.txt
 
 Start earning extra money now!
 
-````bash
+```bash
 chmod +x run_bot.sh
 
 ./run_bot.sh
